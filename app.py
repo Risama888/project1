@@ -1,110 +1,102 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for
-import json
-import datetime
+from flask import Flask, render_template, Response, request, jsonify
+import cv2
+import threading
+import speech_recognition as sr
 
 app = Flask(__name__)
 
-# Data pengguna dan kemajuan belajar
-users = {}  # Simpan data pengguna, misalnya: {user_id: {...}}
-interactions = {}  # Pola interaksi pengguna
-performance = {}  # Hasil ujian dan performa
+# Data polling
+polling_question = "Apa warna favoritmu?"
+polling_options = ["Merah", "Biru", "Hijau", "Kuning"]
+polling_results = {option: 0 for option in polling_options}
 
-# Data materi belajar sesuai gaya dan level
-materi_belajar = {
-    'visual': {
-        'pemula': ["Materi Visual Pemula A", "Materi Visual Pemula B"],
-        'lanjutan': ["Materi Visual Lanjutan A"]
-    },
-    'auditori': {
-        'pemula': ["Materi Auditori Pemula A"],
-        'lanjutan': ["Materi Auditori Lanjutan A"]
-    },
-    'kinestetik': {
-        'pemula': ["Materi Kinestetik Pemula A"],
-        'lanjutan': ["Materi Kinestetik Lanjutan A"]
-    }
-}
+# Data kuis
+quiz_question = "Siapa penemu lampu pijar?"
+quiz_options = ["Thomas Edison", "Nikola Tesla", "Alexander Graham Bell", "Guglielmo Marconi"]
+correct_answer = "Thomas Edison"
+quiz_answers = []
 
-# Route utama
+# Chat history
+chat_history = []
+
+# Variabel global untuk suara level
+voice_level = 0
+
+def video_stream():
+    cap = cv2.VideoCapture(0)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        # Convert ke JPEG
+        ret, jpeg = cv2.imencode('.jpg', frame)
+        if ret:
+            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+    cap.release()
+
+def voice_detection():
+    global voice_level
+    recognizer = sr.Recognizer()
+    mic = sr.Microphone()
+    with mic as source:
+        recognizer.adjust_for_ambient_noise(source)
+    while True:
+        try:
+            with mic as source:
+                audio = recognizer.listen(source, phrase_time_limit=0.5)
+            rms = sr.AudioData(audio.get_raw_data(), audio.sample_rate, audio.sample_width).rms
+            # Normalisasi level suara
+            voice_level = min(100, int(rms / 100))
+        except:
+            voice_level = 0
+
+# Mulai thread deteksi suara
+threading.Thread(target=voice_detection, daemon=True).start()
+
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html',
+                           polling_results=polling_results,
+                           quiz_question=quiz_question,
+                           quiz_options=quiz_options,
+                           chat_history=chat_history)
 
-# Halaman materi belajar sesuai gaya dan level
-@app.route('/materi/<gaya>/<level>')
-def materi(gaya, level):
-    materi_list = materi_belajar.get(gaya, {}).get(level, [])
-    return render_template('materi.html', materi=materi_list, gaya=gaya, level=level)
+@app.route('/video_feed')
+def video_feed():
+    return Response(video_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-# API untuk memperbarui interaksi
-@app.route('/interaksi', methods=['POST'])
-def catat_interaksi():
-    data = request.json
-    user_id = data.get('user_id')
-    tindakan = data.get('tindakan')
-    timestamp = str(datetime.datetime.now())
-    if user_id not in interactions:
-        interactions[user_id] = []
-    interactions[user_id].append({'tindakan': tindakan, 'waktu': timestamp})
-    # Analisis pola dan prediksi performa
-    # [Implementasi analisis sederhana]
-    return jsonify({"status": "berhasil"})
+@app.route('/get_voice_level')
+def get_voice_level():
+    global voice_level
+    return jsonify({"level": voice_level})
 
-# API untuk mengupdate hasil ujian
-@app.route('/hasil_ujian', methods=['POST'])
-def hasil_ujian():
-    data = request.json
-    user_id = data.get('user_id')
-    nilai = data.get('nilai')
-    timestamp = str(datetime.datetime.now())
-    performance[user_id] = {'nilai': nilai, 'waktu': timestamp}
-    # Prediksi performa berdasarkan data
-    prediksi = prediksi_performa(user_id)
-    # Kirim notifikasi jika perlu
-    return jsonify({"prediksi": prediksi})
+@app.route('/submit_poll', methods=['POST'])
+def submit_poll():
+    selected = request.json.get('option')
+    if selected in polling_results:
+        polling_results[selected] += 1
+        return jsonify({"status": "success", "results": polling_results})
+    return jsonify({"status": "error"})
 
-# Fungsi prediksi performa
-def prediksi_performa(user_id):
-    # Contoh sederhana: rata-rata nilai dan pola interaksi
-    nilai = performance.get(user_id, {}).get('nilai', 0)
-    interaksi = len(interactions.get(user_id, []))
-    # Logika prediksi sederhana
-    if nilai > 80 and interaksi > 10:
-        status = "baik"
-    elif nilai > 60:
-        status = "meningkat"
+@app.route('/submit_quiz', methods=['POST'])
+def submit_quiz():
+    answer = request.json.get('answer')
+    is_correct = (answer == correct_answer)
+    quiz_answers.append({"answer": answer, "correct": is_correct})
+    return jsonify({"correct": is_correct, "correct_answer": correct_answer})
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    user_message = request.json.get('message')
+    # Respon sederhana
+    if "halo" in user_message.lower():
+        response = "Halo! Ada yang bisa saya bantu?"
+    elif "apa kabar" in user_message.lower():
+        response = "Saya baik, terima kasih! Bagaimana denganmu?"
     else:
-        status = "perlu perhatian"
-    return status
-
-# Tutor virtual (menggunakan NLP sederhana)
-@app.route('/tutor', methods=['POST'])
-def tutor():
-    pertanyaan = request.json.get('pertanyaan')
-    jawaban = proses_pertanyaan(pertanyaan)
-    return jsonify({"jawaban": jawaban})
-
-def proses_pertanyaan(pertanyaan):
-    # Contoh jawaban statis
-    if "apa itu" in pertanyaan.lower():
-        return "Ini adalah sistem belajar berbasis web."
-    elif "bagaimana cara" in pertanyaan.lower():
-        return "Silakan ikuti materi yang sesuai dengan gaya belajar Anda."
-    else:
-        return "Maaf, saya belum paham pertanyaanmu."
-
-# Sistem notifikasi adaptif
-@app.route('/notifikasi/<user_id>')
-def notifikasi(user_id):
-    prediksi = prediksi_performa(user_id)
-    if prediksi == "perlu perhatian":
-        pesan = "Silakan tingkatkan interaksi dan belajar Anda."
-    elif prediksi == "meningkat":
-        pesan = "Bagus! Teruskan usaha belajar."
-    else:
-        pesan = "Anda berada di jalur yang benar."
-    return jsonify({"pesan": pesan})
+        response = "Maaf, saya tidak mengerti. Coba tanya lagi."
+    chat_history.append({"user": user_message, "ai": response})
+    return jsonify({"response": response, "chat_history": chat_history})
 
 if __name__ == '__main__':
-    # Jalankan Flask di host 0.0.0.0 dan port 8080
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run(debug=True)
