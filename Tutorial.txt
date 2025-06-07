@@ -1,0 +1,4 @@
+Cara memulai project
+• install library flask ,requests ,sqlite3 , scikit-learn 
+• running app.py 
+• buka browser ketikan / paste 127.0.0.1:5000
